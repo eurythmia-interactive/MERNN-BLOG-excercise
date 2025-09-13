@@ -1,5 +1,6 @@
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
+import PostControls from "@/components/PostControls";
 
 // Define the shape of the post object for this page
 interface Post {
@@ -14,19 +15,25 @@ interface Post {
   createdAt: string;
 }
 
+// Helper function to get the base URL for API calls.
+function getApiBaseUrl(): string {
+  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || process.env.NEXT_PUBLIC_VERCEL_URL || "http://localhost:3000";
+  return baseUrl;
+}
+
 // Function to fetch a single post by its slug
 async function getPostBySlug(slug: string): Promise<Post | null> {
-  // ADD AWAIT HERE:
-  const headerList = await headers(); // Get the headers object
-  const host = headerList.get("host"); // Access the 'host' header from the resolved object
+  const headerList = await headers();
+  const requestHost = headerList.get("host");
+
+  const fullBaseUrl = getApiBaseUrl();
+  const host = requestHost ? requestHost : new URL(fullBaseUrl).host;
 
   if (!host) {
-    throw new Error("Could not determine host for API call. `host` header is missing.");
+    throw new Error("Could not determine host for API call to fetch a single post.");
   }
 
-  const protocol = process.env.NODE_ENV === "development" ? "http" : "https";
-  // We need to adapt our backend or create a new endpoint to fetch by slug
-  // For now, let's assume we create an endpoint `/api/posts/slug/[slug]`
+  const protocol = requestHost ? (requestHost.startsWith('localhost') ? "http" : "https") : new URL(fullBaseUrl).protocol.replace(':', '');
   const res = await fetch(`${protocol}://${host}/api/posts/slug/${slug}`, {
     cache: "no-store",
   });
@@ -36,36 +43,21 @@ async function getPostBySlug(slug: string): Promise<Post | null> {
   }
 
   if (!res.ok) {
-    throw new Error("Failed to fetch post");
+    throw new Error(`Failed to fetch post: ${res.status} ${res.statusText}`);
   }
   return res.json();
 }
 
 // This function tells Next.js which slugs to pre-render at build time
 export async function generateStaticParams() {
-    // ADD AWAIT HERE:
-    const headerList = await headers(); // Get the headers object
-    const host = headerList.get("host"); // Access the 'host' header from the resolved object
+    const baseUrl = getApiBaseUrl();
+    const res = await fetch(`${baseUrl}/api/posts`);
 
-    if (!host) {
-        // This is critical for build-time generation. If host isn't available, we can't fetch.
-        // In a real deployment, Next.js typically provides `host` during build time,
-        // but for local dev with specific setups, it might need to be explicit.
-        // A more robust solution for `generateStaticParams` might involve
-        // providing a hardcoded base URL for your API if 'host' is reliably absent during build.
-        console.error("Warning: `host` header is missing during generateStaticParams. Falling back to localhost.");
-        // Fallback for build time if host is unexpectedly null/undefined
-        // This might still fail if your API isn't running at http://localhost:3000 during build
-        const protocol = process.env.NODE_ENV === "development" ? "http" : "https";
-        const fallbackHost = process.env.NEXT_PUBLIC_VERCEL_URL || "localhost:3000";
-        const res = await fetch(`${protocol}://${fallbackHost}/api/posts`);
-        const posts: Post[] = await res.json();
-        return posts.map((post) => ({ slug: post.slug }));
+    if (!res.ok) {
+      console.error(`Failed to fetch posts for generateStaticParams: ${res.status} ${res.statusText}`);
+      return [];
     }
 
-
-    const protocol = process.env.NODE_ENV === "development" ? "http" : "https";
-    const res = await fetch(`${protocol}://${host}/api/posts`);
     const posts: Post[] = await res.json();
 
     return posts.map((post) => ({
@@ -73,8 +65,17 @@ export async function generateStaticParams() {
     }));
 }
 
-export default async function PostPage({ params }: { params: { slug: string } }) {
-  const post = await getPostBySlug(params.slug);
+export default async function PostPage(props: { params: { slug: string } }) {
+  // CRUCIAL FIX: Await the params object itself
+  const { params } = await props; // Await the props object to ensure params is resolved
+  // Or, if props itself is always an object and only params within is deferred:
+  // const awaitedParams = await params;
+  // const post = await getPostBySlug(awaitedParams.slug);
+
+  // The most common and direct fix for the specific error "params should be awaited" is to await the destructuring of params
+  const { slug } = await params; // Destructure slug from the awaited params
+
+  const post = await getPostBySlug(slug); // Use the awaited slug
 
   // If the post is not found, show the 404 page
   if (!post) {
@@ -99,9 +100,14 @@ export default async function PostPage({ params }: { params: { slug: string } })
         className="prose lg:prose-xl max-w-none"
         dangerouslySetInnerHTML={{ __html: post.content.replace(/\\n/g, '<br />') }}
       />
+
+      <PostControls
+        authorId={post.author._id}
+        postId={post._id}
+        postSlug={post.slug}
+      />
     </article>
   );
 }
 
-// Also add revalidation here
 export const revalidate = 60;
